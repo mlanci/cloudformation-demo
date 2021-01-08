@@ -1,6 +1,6 @@
 ---
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Standard Controller Provisioning(EC2 Instance and ALB)
+Description: Cloudformation Demo for MS
 Parameters:
   EC2KeyName:
     Description: Select a key pair to enable SSH access to the EC2 instance
