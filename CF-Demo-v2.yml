@@ -1,0 +1,229 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Standard Controller Provisioning(EC2 Instance and ALB)
+Parameters:
+  EC2KeyName:
+    Description: Select a key pair to enable SSH access to the EC2 instance
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: must be the name of an existing EC2 key pair.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Select the VPC in which the stack should be deployed
+  EC2Name:
+    Type: String
+    Description: Specify the name of the EC2 instance
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Description: Choose a Linux-based Amazon Machine Image (AMI)
+      EC2 instance
+  InstanceType:
+    Description: Select the desired EC2 instance type
+    Type: String
+    AllowedValues:
+    - t2.medium
+    - t2.micro
+    ConstraintDescription: Must be a valid EC2 instance type.
+  EC2SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Choose the subnet in which the EC2 instance will be launched
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: Network Configuration
+      Parameters:
+      - VpcId
+    - Label:
+        default: Controller Configuration
+      Parameters:
+      - EC2Name
+      - AmiId
+      - InstanceType
+      - EC2SubnetId
+      - EC2KeyName
+Resources:
+  myKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: symmetric CMK
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: key-default-1
+        Statement:
+        - Sid: Enable IAM User Permissions
+          Effect: Allow
+          Principal:
+            AWS: arn:aws:iam::575403877883:user/mlanci
+          Action: kms:*
+          Resource: '*'
+        - Sid: Allow administration of the key
+          Effect: Allow
+          Principal:
+            AWS: arn:aws:iam::575403877883:user/mlanci
+          Action:
+          - kms:Create*
+          - kms:Describe*
+          - kms:Enable*
+          - kms:List*
+          - kms:Put*
+          - kms:Update*
+          - kms:Revoke*
+          - kms:Disable*
+          - kms:Get*
+          - kms:Delete*
+          - kms:ScheduleKeyDeletion
+          - kms:CancelKeyDeletion
+          Resource: '*'
+        - Sid: Allow use of the key
+          Effect: Allow
+          Principal:
+            AWS: arn:aws:iam::575403877883:user/mlanci
+          Action:
+          - kms:DescribeKey
+          - kms:Encrypt
+          - kms:Decrypt
+          - kms:ReEncrypt*
+          - kms:GenerateDataKey
+          - kms:GenerateDataKeyWithoutPlaintext
+          Resource: '*'
+  mySecrets:
+    Type: 'AWS::SecretsManager::Secret'
+    Properties:
+      Name: MySecretForAppDynamics
+      Description: "This secret has a dynamically generated secret password."
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "admin"}'
+        GenerateStringKey: "password"
+        PasswordLength: 30
+        ExcludeCharacters: '"@/\'
+      KmsKeyId: !Ref myKey
+      Tags:
+        -
+          Key: AppName
+          Value: AppDynamics
+  EC2Role:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument: # Tells that Ec2 can assume this role
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - sts:AssumeRole
+              Principal:
+                Service:
+                  - ec2.amazonaws.com
+        Policies: # Tells that you can call for the secret value
+          - PolicyName: "root"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action: "secretsmanager:GetSecretValue"
+                  Resource: !Ref mySecrets
+        RoleName: 'ec2RoleCFDemo'
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName:  'instance-profile-ec2-CFDemo'
+      Roles:
+        - !Ref EC2Role
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType:
+        Ref: InstanceType
+      KeyName:
+        Ref: EC2KeyName
+      ImageId:
+        Ref: AmiId
+      BlockDeviceMappings:
+      - DeviceName: "/dev/xvda"
+        Ebs:
+          VolumeType: gp2
+          DeleteOnTermination: 'true'
+          VolumeSize: '10'
+      - DeviceName: "/dev/xvdb"
+        Ebs:
+          VolumeType: gp2
+          DeleteOnTermination: 'false'
+          VolumeSize: '10'
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      UserData:
+        Fn::Base64: !Sub
+        - |
+          #!/bin/bash
+
+          # Get Variables
+          secret=`aws --region ${AWS::Region} secretsmanager get-secret-value --secret-id ${secretRef} --query SecretString --output text`
+          sftpuser=`echo "$secret" | sed -n 's/.*"username":["]*\([^(",})]*\)[",}].*/\1/p'`
+          sftppassword=`echo "$secret" | sed -n 's/.*"password":["]*\([^(",})]*\)[",}].*/\1/p'`
+
+          # Create Sftp User
+          adduser $sftpuser
+          echo "$sftpuser:$sftppassword" | chpasswd
+
+          # Configure sftp connection
+          echo "" >> /etc/ssh/sshd_config
+          echo "Match User $sftpuser" >> /etc/ssh/sshd_config
+          echo "    PasswordAuthentication yes" >> /etc/ssh/sshd_config
+          echo "    ForceCommand /usr/libexec/openssh/sftp-server" >> /etc/ssh/sshd_config
+
+          # Restart the service
+          systemctl restart sshd
+        -
+          secretRef: !Ref mySecrets
+      NetworkInterfaces:
+      - AssociatePublicIpAddress: 'true'
+        DeviceIndex: '0'
+        GroupSet:
+        - Ref: EC2SecurityGroup 
+        SubnetId:
+          Ref: EC2SubnetId
+      Tags:
+      - Key: Name
+        Value:
+          Ref: EC2Name
+  EC2InstanceENI:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      GroupSet:
+      - Ref: EC2SecurityGroup
+      SubnetId:
+        Ref: EC2SubnetId
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow ssh to client host
+      VpcId:
+        Ref: VpcId
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 0.0.0.0/0
+Outputs:
+  InstanceId:
+    Description: InstanceId of the newly created EC2 instance
+    Value:
+      Ref: EC2Instance
+  AZ:
+    Description: Availability Zone of the newly created EC2 instance
+    Value:
+      Fn::GetAtt:
+      - EC2Instance
+      - AvailabilityZone
+  PrivateDnsName:
+    Description: Public DNSName of the newly created EC2 instance
+    Value:
+      Fn::GetAtt:
+      - EC2Instance
+      - PrivateDnsName
+  PrivateIp:
+    Description: Private IP address of the newly created EC2 instance
+    Value:
+      Fn::GetAtt:
+      - EC2Instance
+      - PrivateIp
+ 
