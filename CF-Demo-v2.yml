@@ -16,7 +16,8 @@ Parameters:
     Type: AWS::EC2::Image::Id
     Description: Choose a Linux-based Amazon Machine Image (AMI)
       EC2 instance
-  InstanceType:
+  EC2InstanceType:
+    Type: AWS::EC2::Instance::InstanceType
     Description: Select the desired EC2 instance type
     Type: String
     AllowedValues:
@@ -26,6 +27,12 @@ Parameters:
   EC2SubnetId:
     Type: AWS::EC2::Subnet::Id
     Description: Choose the subnet in which the EC2 instance will be launched
+Mappings:
+  AWSInstanceType2Arch:
+    t2.micro:
+      Arch: HVM64
+    t2.medium:
+      Arch: HVM64
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
@@ -38,7 +45,7 @@ Metadata:
       Parameters:
       - EC2Name
       - AmiId
-      - InstanceType
+      - EC2InstanceType
       - EC2SubnetId
       - EC2KeyName
 Resources:
@@ -109,7 +116,7 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType:
-        Ref: InstanceType
+        Ref: EC2InstanceType
       KeyName:
         Ref: EC2KeyName
       ImageId:
