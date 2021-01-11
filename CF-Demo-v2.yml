@@ -1,6 +1,6 @@
 ---
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Cloudformation Demo for MS
+Description: Standard Controller Provisioning(EC2 Instance and ALB)
 Parameters:
   EC2KeyName:
     Description: Select a key pair to enable SSH access to the EC2 instance
@@ -45,51 +45,27 @@ Resources:
   myKey:
     Type: AWS::KMS::Key
     Properties:
-      Description: symmetric CMK
+      Description: "KMS Symmetric Key"
+      Enabled: 'true'
+      EnableKeyRotation: 'true'  
       KeyPolicy:
-        Version: '2012-10-17'
-        Id: key-default-1
+        Version: 2012-10-17
         Statement:
-        - Sid: Enable IAM User Permissions
+          Sid: Enable IAM User Permissions
           Effect: Allow
           Principal:
-            AWS: arn:aws:iam::575403877883:user/mlanci
+           AWS:
+            - Fn::Sub: "arn:aws:iam::${AWS::AccountId}:root"
           Action: kms:*
           Resource: '*'
-        - Sid: Allow administration of the key
-          Effect: Allow
-          Principal:
-            AWS: arn:aws:iam::575403877883:user/mlanci
-          Action:
-          - kms:Create*
-          - kms:Describe*
-          - kms:Enable*
-          - kms:List*
-          - kms:Put*
-          - kms:Update*
-          - kms:Revoke*
-          - kms:Disable*
-          - kms:Get*
-          - kms:Delete*
-          - kms:ScheduleKeyDeletion
-          - kms:CancelKeyDeletion
-          Resource: '*'
-        - Sid: Allow use of the key
-          Effect: Allow
-          Principal:
-            AWS: arn:aws:iam::575403877883:user/mlanci
-          Action:
-          - kms:DescribeKey
-          - kms:Encrypt
-          - kms:Decrypt
-          - kms:ReEncrypt*
-          - kms:GenerateDataKey
-          - kms:GenerateDataKeyWithoutPlaintext
-          Resource: '*'
+      KeyUsage: ENCRYPT_DECRYPT    
+      Tags:
+        - Key: "Name"
+          Value: Encrypted KMS
   mySecrets:
     Type: 'AWS::SecretsManager::Secret'
     Properties:
-      Name: MySecretForAppDynamics
+      Name: MySecret
       Description: "This secret has a dynamically generated secret password."
       GenerateSecretString:
         SecretStringTemplate: '{"username": "admin"}'
@@ -99,8 +75,8 @@ Resources:
       KmsKeyId: !Ref myKey
       Tags:
         -
-          Key: AppName
-          Value: AppDynamics
+          Key: Name
+          Value: CFDemo
   EC2Role:
       Type: AWS::IAM::Role
       Properties:
@@ -178,7 +154,7 @@ Resources:
       - AssociatePublicIpAddress: 'true'
         DeviceIndex: '0'
         GroupSet:
-        - Ref: EC2SecurityGroup 
+        - Ref: EC2SecurityGroup
         SubnetId:
           Ref: EC2SubnetId
       Tags:
@@ -226,4 +202,3 @@ Outputs:
       Fn::GetAtt:
       - EC2Instance
       - PrivateIp
- 
