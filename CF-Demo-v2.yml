@@ -1,6 +1,6 @@
 ---
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Cloudformation Demo for MS
+Description: Standard Controller Provisioning(EC2 Instance and ALB)
 Parameters:
   EC2KeyName:
     Description: Select a key pair to enable SSH access to the EC2 instance
@@ -12,11 +12,8 @@ Parameters:
   EC2Name:
     Type: String
     Description: Specify the name of the EC2 instance
-  AmiId:
-    Type: AWS::EC2::Image::Id
-    Description: Choose a Linux-based Amazon Machine Image (AMI)
-      EC2 instance
-  InstanceType:
+  EC2InstanceType:
+    Type: AWS::EC2::Instance::InstanceType
     Description: Select the desired EC2 instance type
     Type: String
     AllowedValues:
@@ -26,6 +23,15 @@ Parameters:
   EC2SubnetId:
     Type: AWS::EC2::Subnet::Id
     Description: Choose the subnet in which the EC2 instance will be launched
+  BastionHost:
+    Type: String
+    Description: Enter Bastion Host IP
+Mappings:
+  RegionMap: 
+    us-east-1: 
+      "HVM64": "ami-0be2609ba883822ec"
+    us-west-1: 
+      "HVM64": "ami-0be2609ba883822ec"
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
@@ -37,70 +43,46 @@ Metadata:
         default: Controller Configuration
       Parameters:
       - EC2Name
-      - AmiId
-      - InstanceType
+      - EC2InstanceType
       - EC2SubnetId
       - EC2KeyName
+      - BastionHost
 Resources:
   myKey:
     Type: AWS::KMS::Key
     Properties:
-      Description: symmetric CMK
+      Description: "KMS Symmetric Key"
+      Enabled: 'true'
+      EnableKeyRotation: 'true'  
       KeyPolicy:
-        Version: '2012-10-17'
-        Id: key-default-1
+        Version: 2012-10-17
         Statement:
-        - Sid: Enable IAM User Permissions
+          Sid: Enable IAM User Permissions
           Effect: Allow
           Principal:
-            AWS: arn:aws:iam::575403877883:user/mlanci
+           AWS:
+            - Fn::Sub: "arn:aws:iam::${AWS::AccountId}:root"
           Action: kms:*
           Resource: '*'
-        - Sid: Allow administration of the key
-          Effect: Allow
-          Principal:
-            AWS: arn:aws:iam::575403877883:user/mlanci
-          Action:
-          - kms:Create*
-          - kms:Describe*
-          - kms:Enable*
-          - kms:List*
-          - kms:Put*
-          - kms:Update*
-          - kms:Revoke*
-          - kms:Disable*
-          - kms:Get*
-          - kms:Delete*
-          - kms:ScheduleKeyDeletion
-          - kms:CancelKeyDeletion
-          Resource: '*'
-        - Sid: Allow use of the key
-          Effect: Allow
-          Principal:
-            AWS: arn:aws:iam::575403877883:user/mlanci
-          Action:
-          - kms:DescribeKey
-          - kms:Encrypt
-          - kms:Decrypt
-          - kms:ReEncrypt*
-          - kms:GenerateDataKey
-          - kms:GenerateDataKeyWithoutPlaintext
-          Resource: '*'
+      KeyUsage: ENCRYPT_DECRYPT    
+      Tags:
+        - Key: "Name"
+          Value: Encrypted KMS
   mySecrets:
     Type: 'AWS::SecretsManager::Secret'
     Properties:
-      Name: MySecretForAppDynamics
+      Name: MySecret
       Description: "This secret has a dynamically generated secret password."
       GenerateSecretString:
         SecretStringTemplate: '{"username": "admin"}'
         GenerateStringKey: "password"
+        ExcludePunctuation: true
         PasswordLength: 30
-        ExcludeCharacters: '"@/\'
       KmsKeyId: !Ref myKey
       Tags:
         -
-          Key: AppName
-          Value: AppDynamics
+          Key: Name
+          Value: CFDemo
   EC2Role:
       Type: AWS::IAM::Role
       Properties:
@@ -114,13 +96,29 @@ Resources:
                 Service:
                   - ec2.amazonaws.com
         Policies: # Tells that you can call for the secret value
-          - PolicyName: "root"
+          - PolicyName: "smAccess"
             PolicyDocument:
               Version: "2012-10-17"
               Statement:
                 - Effect: Allow
-                  Action: "secretsmanager:GetSecretValue"
-                  Resource: !Ref mySecrets
+                  Action:
+                  - secretsmanager:GetResourcePolicy
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:ListSecretVersionIds
+                  Resource:
+                  - !Ref mySecrets
+          - PolicyName: "kmsAccess"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
+                  Resource:
+                  - !GetAtt myKey.Arn
         RoleName: 'ec2RoleCFDemo'
 
   EC2InstanceProfile:
@@ -132,66 +130,19 @@ Resources:
   EC2Instance:
     Type: AWS::EC2::Instance
     Properties:
-      InstanceType:
-        Ref: InstanceType
-      KeyName:
-        Ref: EC2KeyName
-      ImageId:
-        Ref: AmiId
-      BlockDeviceMappings:
-      - DeviceName: "/dev/xvda"
-        Ebs:
-          VolumeType: gp2
-          DeleteOnTermination: 'true'
-          VolumeSize: '10'
-      - DeviceName: "/dev/xvdb"
-        Ebs:
-          VolumeType: gp2
-          DeleteOnTermination: 'false'
-          VolumeSize: '10'
+      InstanceType: !Ref EC2InstanceType
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", HVM64]
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      KeyName: !Ref EC2KeyName
       IamInstanceProfile: !Ref EC2InstanceProfile
-      UserData:
-        Fn::Base64: !Sub
-        - |
-          #!/bin/bash
-
-          # Get Variables
-          secret=`aws --region ${AWS::Region} secretsmanager get-secret-value --secret-id ${secretRef} --query SecretString --output text`
-          sftpuser=`echo "$secret" | sed -n 's/.*"username":["]*\([^(",})]*\)[",}].*/\1/p'`
-          sftppassword=`echo "$secret" | sed -n 's/.*"password":["]*\([^(",})]*\)[",}].*/\1/p'`
-
-          # Create Sftp User
-          adduser $sftpuser
-          echo "$sftpuser:$sftppassword" | chpasswd
-
-          # Configure sftp connection
-          echo "" >> /etc/ssh/sshd_config
-          echo "Match User $sftpuser" >> /etc/ssh/sshd_config
-          echo "    PasswordAuthentication yes" >> /etc/ssh/sshd_config
-          echo "    ForceCommand /usr/libexec/openssh/sftp-server" >> /etc/ssh/sshd_config
-
-          # Restart the service
-          systemctl restart sshd
-        -
-          secretRef: !Ref mySecrets
-      NetworkInterfaces:
-      - AssociatePublicIpAddress: 'true'
-        DeviceIndex: '0'
-        GroupSet:
-        - Ref: EC2SecurityGroup 
-        SubnetId:
-          Ref: EC2SubnetId
       Tags:
-      - Key: Name
-        Value:
-          Ref: EC2Name
-  EC2InstanceENI:
-    Type: AWS::EC2::NetworkInterface
-    Properties:
-      GroupSet:
-      - Ref: EC2SecurityGroup
-      SubnetId:
-        Ref: EC2SubnetId
+        - Key: Name
+          Value: !Ref EC2Name
+      UserData:
+        Fn::Base64: !Sub |
+           #!/bin/bash -xe
+           aws --region ${AWS::Region} secretsmanager get-secret-value --secret-id MySecret --query SecretString > /home/ec2-user/credentials.txt
   EC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -202,12 +153,14 @@ Resources:
       - IpProtocol: tcp
         FromPort: '22'
         ToPort: '22'
-        CidrIp: 0.0.0.0/0
+        CidrIp: !Join ["/", [!Ref BastionHost, 32]]
 Outputs:
   InstanceId:
     Description: InstanceId of the newly created EC2 instance
     Value:
       Ref: EC2Instance
+  TestOutput:
+    Value: !Join ["/", [!Ref BastionHost, 0]]
   AZ:
     Description: Availability Zone of the newly created EC2 instance
     Value:
@@ -226,4 +179,3 @@ Outputs:
       Fn::GetAtt:
       - EC2Instance
       - PrivateIp
- 
