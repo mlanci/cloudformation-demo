@@ -12,10 +12,6 @@ Parameters:
   EC2Name:
     Type: String
     Description: Specify the name of the EC2 instance
-  AmiId:
-    Type: AWS::EC2::Image::Id
-    Description: Choose a Linux-based Amazon Machine Image (AMI)
-      EC2 instance
   EC2InstanceType:
     Type: AWS::EC2::Instance::InstanceType
     Description: Select the desired EC2 instance type
@@ -27,12 +23,15 @@ Parameters:
   EC2SubnetId:
     Type: AWS::EC2::Subnet::Id
     Description: Choose the subnet in which the EC2 instance will be launched
+  BastionHost:
+    Type: String
+    Description: Enter Bastion Host IP
 Mappings:
-  AWSInstanceType2Arch:
-    t2.micro:
-      Arch: HVM64
-    t2.medium:
-      Arch: HVM64
+  RegionMap: 
+    us-east-1: 
+      "HVM64": "ami-0be2609ba883822ec"
+    us-west-1: 
+      "HVM64": "ami-0be2609ba883822ec"
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
@@ -44,10 +43,10 @@ Metadata:
         default: Controller Configuration
       Parameters:
       - EC2Name
-      - AmiId
       - EC2InstanceType
       - EC2SubnetId
       - EC2KeyName
+      - BastionHost
 Resources:
   myKey:
     Type: AWS::KMS::Key
@@ -77,7 +76,7 @@ Resources:
       GenerateSecretString:
         SecretStringTemplate: '{"username": "admin"}'
         GenerateStringKey: "password"
-        ExcludePunctuation: false
+        ExcludePunctuation: true
         PasswordLength: 30
       KmsKeyId: !Ref myKey
       Tags:
@@ -97,13 +96,29 @@ Resources:
                 Service:
                   - ec2.amazonaws.com
         Policies: # Tells that you can call for the secret value
-          - PolicyName: "root"
+          - PolicyName: "smAccess"
             PolicyDocument:
               Version: "2012-10-17"
               Statement:
                 - Effect: Allow
-                  Action: '*'
-                  Resource: '*'
+                  Action:
+                  - secretsmanager:GetResourcePolicy
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:ListSecretVersionIds
+                  Resource:
+                  - !Ref mySecrets
+          - PolicyName: "kmsAccess"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                  - kms:DescribeKey
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
+                  Resource:
+                  - !GetAtt myKey.Arn
         RoleName: 'ec2RoleCFDemo'
 
   EC2InstanceProfile:
@@ -116,7 +131,7 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: !Ref EC2InstanceType
-      ImageId: !Ref AmiId
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", HVM64]
       SecurityGroupIds:
         - !Ref EC2SecurityGroup
       KeyName: !Ref EC2KeyName
@@ -127,7 +142,7 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
            #!/bin/bash -xe
-           aws --region us-east-1 secretsmanager get-secret-value --secret-id MySecret --query SecretString > /home/ec2-user/credentials.txt
+           aws --region ${AWS::Region} secretsmanager get-secret-value --secret-id MySecret --query SecretString > /home/ec2-user/credentials.txt
   EC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -138,12 +153,14 @@ Resources:
       - IpProtocol: tcp
         FromPort: '22'
         ToPort: '22'
-        CidrIp: 0.0.0.0/0
+        CidrIp: !Join ["/", [!Ref BastionHost, 32]]
 Outputs:
   InstanceId:
     Description: InstanceId of the newly created EC2 instance
     Value:
       Ref: EC2Instance
+  TestOutput:
+    Value: !Join ["/", [!Ref BastionHost, 0]]
   AZ:
     Description: Availability Zone of the newly created EC2 instance
     Value:
